@@ -4,8 +4,10 @@
 
 ## Methodology
 
-1. Prepare subtitle 
-    [video-watching-acceleration](https://github.com/studentofkyoto/video-watching-acceleration/) was used
+1. Prepare subtitle
+
+    [video-watching-acceleration](https://github.com/studentofkyoto/video-watching-acceleration/) was used.
+    
     this video-watching-acceleration use [Whisper by OpenAI](https://github.com/openai/whisper)(MIT license).
 
     this process makes transcript with video's language.
