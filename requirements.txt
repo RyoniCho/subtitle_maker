@@ -1,0 +1,6 @@
+pandas
+torch
+moviepy
+scipy
+stable-ts
+openai

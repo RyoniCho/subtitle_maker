@@ -1,0 +1,1 @@
+python3.9 -m video_watching_acceleration.transcribe mp4 data_src data_src --whisper-model large
