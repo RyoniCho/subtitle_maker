@@ -75,12 +75,18 @@ else:
     result = mlx_whisper.transcribe(
         optimized_audio,  # 오디오 파일 경로
         path_or_hf_repo=f"{args.model}",  # 모델 경로
-        language=args.lan
+        language=args.lan,
+        verbose=True,  # 로그 출력 옵션
     )
+
+    print(f"optimezed_audio: {optimized_audio}")
+    print(f"file_name: {file_name}")
     
     # 임시 파일 삭제
-    if optimized_audio != file_name:
-        os.unlink(optimized_audio)
+    
+    os.unlink(optimized_audio)
+   
+    
 
     print("transcribe end")
 
