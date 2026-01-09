@@ -33,7 +33,7 @@ def extract_audio(video_path, audio_output_path):
         print(f"Error extracting audio: {e}")
         return False
 
-def generate_srt(video_path, model_name='large-v2', language='ja', output_dir=None):
+def generate_srt(video_path, model_name='large-v3-turbo', language='ja', output_dir=None):
     if not os.path.exists(video_path):
         print(f"Error: File not found - {video_path}")
         return
@@ -84,7 +84,7 @@ def generate_srt(video_path, model_name='large-v2', language='ja', output_dir=No
         
         # 4. Save SRT
         print(f"Step 4: Saving SRT to {srt_output_path}...")
-        result.to_srt_vtt(srt_output_path, segment_level=False, word_level=False)
+        result.to_srt_vtt(srt_output_path, segment_level=True, word_level=False)
         print("Done!")
         
     except Exception as e:
@@ -97,7 +97,7 @@ def generate_srt(video_path, model_name='large-v2', language='ja', output_dir=No
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate SRT from Video using Stable-Whisper")
     parser.add_argument("--input", "-i", required=True, help="Input video file path")
-    parser.add_argument("--model", "-m", default="large-v3", help="Whisper model name (tiny, base, small, medium, large, large-v2, large-v3)")
+    parser.add_argument("--model", "-m", default="large-v3-turbo", help="Whisper model name (tiny, base, small, medium, large, large-v2, large-v3, large-v3-turbo)")
     parser.add_argument("--lang", "-l", default="ja", help="Language code (ja, en, ko, etc.)")
     parser.add_argument("--output", "-o", default=None, help="Output directory (optional)")
     

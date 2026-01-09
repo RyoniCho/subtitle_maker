@@ -5,7 +5,7 @@ import os
 # MUST be set before importing torch or any library that imports torch.
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
-import google.generativeai as genai
+from google import genai
 import re
 import time
 import json
@@ -14,6 +14,42 @@ from datetime import datetime
 import subprocess
 import torch
 import shutil
+import sys
+
+def open_file_dialog():
+    """Opens a file dialog to select a video file using a subprocess to avoid threading issues."""
+    script = """
+import tkinter as tk
+from tkinter import filedialog
+import os
+
+try:
+    root = tk.Tk()
+    root.withdraw()
+    root.wm_attributes('-topmost', 1)
+    file_path = filedialog.askopenfilename(
+        title="Select Video File",
+        filetypes=[("Video Files", "*.mp4 *.mkv *.avi *.mov *.ts"), ("All Files", "*.*")]
+    )
+    if file_path:
+        print(file_path)
+    root.destroy()
+except:
+    pass
+"""
+    try:
+        # Run tkinter in a separate process to avoid main thread crashes in Streamlit
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        path = result.stdout.strip()
+        return path if path else None
+    except Exception as e:
+        print(f"File dialog error: {e}")
+        return None
 
 # Check if stable_whisper is available (it should be)
 try:
@@ -169,8 +205,30 @@ tab1, tab2, tab3 = st.tabs(["💬 Translation (SRT to Korean)", "🎥 Video to S
 # --------------------------
 with st.sidebar:
     st.header("Global Settings")
-    api_key_input = st.text_input("Gemini API Key", type="password", help="Enter Google Gemini API Key")
-    gemini_model_select = st.selectbox("Gemini Model", ["gemini-2.5-flash", "gemini-pro", "gemini-1.5-flash"], index=0)
+
+    auth_mode = st.radio("Auth Method", ["API Key", "Vertex AI (CLI/ADC)"], help="Select API Key or System Credentials (gcloud CLI)")
+    
+    api_key_input = ""
+    vertex_project_id = ""
+    vertex_location = ""
+    
+    if auth_mode == "API Key":
+        api_key_input = st.text_input("Gemini API Key", type="password", help="Enter Google Gemini API Key")
+    else:
+        st.info("Using System Credentials (ADC). Ensure you have run `gcloud auth application-default login`.")
+        vertex_project_id = st.text_input("Google Cloud Project ID")
+        vertex_location = st.text_input("Location (Region)", value="us-central1")
+
+    gemini_model_list = [
+        "gemini-3.0-pro-preview", 
+        "gemini-3.0-flash",
+        "gemini-2.0-flash-exp", 
+        "gemini-2.0-flash", 
+        "gemini-1.5-pro", 
+        "gemini-1.5-flash", 
+        "gemini-pro"
+    ]
+    gemini_model_select = st.selectbox("Gemini Model", gemini_model_list, index=0)
     
     st.markdown("---")
     custom_prompt_input = st.text_area("Translation Prompt", 
@@ -179,7 +237,7 @@ with st.sidebar:
     
     st.markdown("---")
     st.write("Whisper Settings (Tab 2 & 3)")
-    whisper_model_select = st.selectbox("Whisper Model", ["large-v3", "large-v2", "medium", "small", "base"], index=0)
+    whisper_model_select = st.selectbox("Whisper Model", ["large-v3-turbo", "large-v3", "large-v2", "medium", "small", "base"], index=0)
     whisper_lang_select = st.selectbox("Source Language", ["ja", "en", "ko", "zh", "es", "fr"], index=0)
 
 
@@ -190,7 +248,7 @@ with tab1:
     st.subheader("Translate Existing SRT")
     uploaded_file = st.file_uploader("Upload .srt file for translation", type=["srt"])
 
-    if uploaded_file and api_key_input:
+    if uploaded_file and (api_key_input or auth_mode == "Vertex AI (CLI/ADC)"):
         content_bytes = uploaded_file.read()
         try:
             content_str = content_bytes.decode('utf-8')
@@ -202,8 +260,10 @@ with tab1:
             st.text(content_str[:500] + "...")
 
         if st.button("Start Translation", key="btn_translate_only"):
-            genai.configure(api_key=api_key_input)
-            model = genai.GenerativeModel(gemini_model_select)
+            if auth_mode == "API Key":
+                client = genai.Client(api_key=api_key_input)
+            else:
+                client = genai.Client(vertexai=True, project=vertex_project_id, location=vertex_location)
             
             st.write("Parsing SRT...")
             status_text = st.empty()
@@ -222,7 +282,10 @@ with tab1:
                 prompt = f"{custom_prompt_input}\n\n{chunk}"
                 
                 try:
-                    response = model.generate_content(prompt)
+                    response = client.models.generate_content(
+                        model=gemini_model_select,
+                        contents=prompt
+                    )
                     if response.text:
                         full_result_text += response.text + "\n"
                     else:
@@ -239,8 +302,8 @@ with tab1:
             st.success("Translation Complete!")
             st.download_button("Download SRT", final_srt, f"translated_{uploaded_file.name}", "text/plain")
 
-    elif not api_key_input:
-        st.info("Enter Gemini API Key in sidebar to translate.")
+    elif not (api_key_input or auth_mode == "Vertex AI (CLI/ADC)"):
+        st.info("Enter Gemini API Key or configure Vertex AI in sidebar to translate.")
 
 # --------------------------
 # TAB 2: Video to SRT
@@ -268,7 +331,20 @@ with tab2:
                         f.write(vid_file.getbuffer())
                     st.success(f"File stored at: {target_video_path}")
         else:
-            local_path = st.text_input("Enter Absolute File Path", "/Users/cho-eul-yeon/Movies/video.mp4", key="tab2_path")
+            if "tab2_file_path" not in st.session_state:
+                st.session_state.tab2_file_path = ""
+
+            col_path, col_btn = st.columns([5, 1])
+            with col_btn:
+                if st.button("📁", key="tab2_browse"):
+                    selected_file = open_file_dialog()
+                    if selected_file:
+                        st.session_state.tab2_file_path = selected_file
+                        st.rerun()
+
+            with col_path:
+                local_path = st.text_input("Enter Absolute File Path", key="tab2_file_path")
+            
             if local_path and os.path.exists(local_path):
                 target_video_path = local_path
                 st.success("File found!")
@@ -317,7 +393,7 @@ with tab2:
                         srt_name = os.path.splitext(base_name)[0] + ".srt"
                         
                         temp_srt_path = "temp_output.srt"
-                        result.to_srt_vtt(temp_srt_path, segment_level=False, word_level=False)
+                        result.to_srt_vtt(temp_srt_path, segment_level=True, word_level=False)
                         
                         with open(temp_srt_path, "r", encoding="utf-8") as f:
                             srt_content = f.read()
@@ -349,8 +425,8 @@ with tab3:
     
     if not STABLE_WHISPER_AVAILABLE:
         st.error("Please install stable-ts: `pip install stable-ts`")
-    elif not api_key_input:
-        st.warning("Please enter your Gemini API Key in the sidebar.")
+    elif not (api_key_input or auth_mode == "Vertex AI (CLI/ADC)"):
+        st.warning("Please enter your Gemini API Key or configure Vertex AI in the sidebar.")
     else:
         # Input Method
         input_method_os = st.radio("Input Method", ["Upload File", "Local File Path"], key="tab3_input")
@@ -368,7 +444,20 @@ with tab3:
                         f.write(vid_file_os.getbuffer())
                     st.success(f"File stored at: {target_video_path_os}")
         else:
-            local_path_os = st.text_input("Enter Absolute File Path", "/Users/cho-eul-yeon/Movies/video.mp4", key="tab3_path")
+            if "tab3_file_path" not in st.session_state:
+                st.session_state.tab3_file_path = ""
+
+            col_path_os, col_btn_os = st.columns([5, 1])
+            with col_btn_os:
+                if st.button("📁", key="tab3_browse"):
+                    selected_file_os = open_file_dialog()
+                    if selected_file_os:
+                        st.session_state.tab3_file_path = selected_file_os
+                        st.rerun()
+
+            with col_path_os:
+                local_path_os = st.text_input("Enter Absolute File Path", key="tab3_file_path")
+
             if local_path_os and os.path.exists(local_path_os):
                 target_video_path_os = local_path_os
                 st.success("File found!")
@@ -405,7 +494,7 @@ with tab3:
                     
                     # Save intermediate SRT to string
                     temp_srt_path_os = "temp_output_os.srt"
-                    result_whisper.to_srt_vtt(temp_srt_path_os, segment_level=False, word_level=False)
+                    result_whisper.to_srt_vtt(temp_srt_path_os, segment_level=True, word_level=False)
                     
                     with open(temp_srt_path_os, "r", encoding="utf-8") as f:
                         original_srt_content = f.read()
@@ -415,9 +504,11 @@ with tab3:
                     # --- STEP 3: Gemini Translation ---
                     status.write(f"Step 3: Translating Subtitles (Gemini {gemini_model_select})...")
                     
-                    genai.configure(api_key=api_key_input)
-                    model_gemini = genai.GenerativeModel(gemini_model_select)
-                    
+                    if auth_mode == "API Key":
+                        client = genai.Client(api_key=api_key_input)
+                    else:
+                        client = genai.Client(vertexai=True, project=vertex_project_id, location=vertex_location)
+
                     originStrList = SRT_to_numbered_blocks(original_srt_content)
                     slicedStrList = SliceStringListForGPTRequest(originStrList)
                     
@@ -434,7 +525,10 @@ with tab3:
                         
                         prompt = f"{custom_prompt_input}\n\n{chunk}"
                         try:
-                            response = model_gemini.generate_content(prompt)
+                            response = client.models.generate_content(
+                                model=gemini_model_select,
+                                contents=prompt
+                            )
                             if response.text:
                                 full_result_text += response.text + "\n"
                         except Exception as e:
