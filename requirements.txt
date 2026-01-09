@@ -4,3 +4,4 @@ moviepy
 scipy
 stable-ts
 openai
+google-genai
