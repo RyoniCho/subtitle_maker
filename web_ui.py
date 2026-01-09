@@ -220,10 +220,11 @@ with st.sidebar:
         vertex_location = st.text_input("Location (Region)", value="us-central1")
 
     gemini_model_list = [
-        "gemini-3.0-pro-preview", 
-        "gemini-3.0-flash",
-        "gemini-2.0-flash-exp", 
-        "gemini-2.0-flash", 
+        "gemini-3-pro-preview", 
+        "gemini-3-flash-preview",
+        "gemini-2.5-flash", 
+        "gemini-2.5-flash-Lite", 
+        "gemini-2.5-pro", 
         "gemini-1.5-pro", 
         "gemini-1.5-flash", 
         "gemini-pro"
