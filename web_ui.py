@@ -5,6 +5,17 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv(override=True)
 
+# Fix for Windows Unicode Path Error (User name with Korean/Non-ASCII characters)
+# Must be set BEFORE importing torch or stable_whisper
+if os.name == 'nt':
+    # C:\Users\Public is usually safe (ASCII) and writable
+    public_dir = os.environ.get('PUBLIC', os.environ.get('SystemDrive', 'C:') + '\\Users\\Public')
+    if os.path.exists(public_dir):
+        safe_cache_dir = os.path.join(public_dir, 'torch_cache')
+        os.environ['TORCH_HOME'] = safe_cache_dir
+        os.makedirs(safe_cache_dir, exist_ok=True)
+        print(f"Windows detected: Override TORCH_HOME to {safe_cache_dir} to avoid encoding errors.")
+
 
 # Set PyTorch fallback for MPS to handle float64 operations. 
 # MUST be set before importing torch or any library that imports torch.
