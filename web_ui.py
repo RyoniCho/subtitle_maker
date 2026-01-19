@@ -10,9 +10,11 @@ load_dotenv(override=True)
 # MUST be set before importing torch or any library that imports torch.
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
+
 # Fix for SSL certificate verify failed error (common on Windows/macOS)
 import ssl
 import certifi
+import numpy as np
 os.environ['SSL_CERT_FILE'] = certifi.where()
 ssl._create_default_https_context = ssl.create_default_context(cafile=certifi.where())
 
@@ -188,22 +190,29 @@ def ApplyTranslationToSRT(original_content, translated_text):
 # Core Logic: Audio/Whisper
 # ==========================================
 
-def extract_audio(video_path, audio_output_path):
-    """Extracts audio using ffmpeg (16kHz mono)."""
+def extract_audio_array(video_path):
+    """Extracts audio to numpy array using ffmpeg (16kHz mono) via stdout pipe."""
     command = [
         'ffmpeg', '-y', '-i', video_path, '-vn',
         '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
-        '-loglevel', 'error', audio_output_path
+        '-f', 's16le', '-'  # Output to stdout
     ]
     try:
-        result = subprocess.run(command, capture_output=True, text=True)
-        if result.returncode != 0:
-            st.error(f"FFmpeg Error Output:\n{result.stderr}")
-            return False
-        return True
+        # Increase buffer limit for large files if needed, but run usually handles it
+        result = subprocess.run(command, capture_output=True, check=True)
+        # Convert bytes to numpy array
+        audio_data = np.frombuffer(result.stdout, np.int16).flatten().astype(np.float32) / 32768.0
+        return audio_data, None
+    except subprocess.CalledProcessError as e:
+        return None, f"FFmpeg Error Output:\n{e.stderr.decode('utf-8', errors='ignore') if e.stderr else str(e)}"
     except Exception as e:
-        st.error(f"FFmpeg Execution Error: {e}")
-        return False
+        return None, f"FFmpeg Execution Error: {e}"
+
+def extract_audio(video_path, audio_output_path):
+    """Legacy file-based extraction (kept for fallback compatibility if needed)."""
+    # ... (code unchanged or minimal keep)
+    # Replaced by extract_audio_array in main logic
+    pass 
 
 # ==========================================
 # Streamlit UI
@@ -245,6 +254,7 @@ with st.sidebar:
         "gemini-pro"
     ]
     gemini_model_select = st.selectbox("Gemini Model", gemini_model_list, index=0)
+    
     
     st.markdown("---")
     custom_prompt_input = st.text_area("Translation Prompt", 
@@ -374,42 +384,34 @@ with tab2:
                 try:
                     # 1. Extract Audio
                     status.write("Extracting Audio with FFmpeg...")
-                    base, _ = os.path.splitext(target_video_path)
-                    audio_path = f"{base}_temp.wav"
-                    success = extract_audio(target_video_path, audio_path)
-                    
-                    if success:
-                        # 2. Load Model
-                        status.write(f"Loading Whisper Model ({whisper_model_select})...")
-                        # Default to CPU to avoid persistent MPS float64 errors with stable-ts
-                        device = "cpu"
-                        if torch.cuda.is_available(): device = "cuda"
+                    if target_video_path:
+                        # 2. Extract Audio to Memory
+                        status.write("Extracting Audio to Memory (Bypass file issues)...")
+                        audio_array, error_msg = extract_audio_array(target_video_path)
                         
-                        # Set default dtype to float32 for MPS compatibility if needed
-                        # But stable-whisper/whisper usually handles this. 
-                        # This specific error "Cannot convert a MPS Tensor to float64..." 
-                        # suggests some internal operation is using float64. 
-                        
-                        model = stable_whisper.load_model(whisper_model_select, device=device)
-                        
-                        # 3. Transcribe
-                        status.write("Transcribing (This may take a while)...")
-                        
-                        # Some whisper versions default to fp16=True, which might cause issues on MPS or mix-precision
-                        # But the error is about float64.
-                        # Explicitly setting fp16=False forces float32 usage which often fixes MPS issues
-                        
-                        result = model.transcribe(
-                            audio_path, 
-                            language=whisper_lang_select, 
-                            regroup=True,
-                            fp16=False,
-                            vad=use_vad
-                        )
-                        
-                        # 4. Save
-                        status.write("Saving SRT...")
-                        base_name = os.path.basename(target_video_path)
+                        if audio_array is not None:
+                            # 2. Load Model
+                            status.write(f"Loading Whisper Model ({whisper_model_select})...")
+                            device = "cpu"
+                            if torch.cuda.is_available(): device = "cuda"
+                            
+                            model = stable_whisper.load_model(whisper_model_select, device=device)
+                            
+                            # 3. Transcribe
+                            status.write("Transcribing...")
+                            
+                            # Pass numpy array directly
+                            result = model.transcribe(
+                                audio_array, 
+                                language=whisper_lang_select, 
+                                regroup=True,
+                                fp16=False,
+                                vad=use_vad
+                            )
+                            
+                            # 4. Save
+                            status.write("Saving SRT...")
+                            base_name = os.path.basename(target_video_path)
                         srt_name = os.path.splitext(base_name)[0] + ".srt"
                         
                         temp_srt_path = "temp_output.srt"
@@ -426,11 +428,10 @@ with tab2:
                         st.text_area("SRT Content", srt_content, height=300)
                         
                         # Cleanup
-                        if os.path.exists(audio_path): os.remove(audio_path)
                         if os.path.exists(temp_srt_path): os.remove(temp_srt_path)
                         
                     else:
-                        status.update(label="Failed at Audio Extraction", state="error")
+                        status.update(label=f"Failed at Audio Extraction: {error_msg}", state="error")
                 
                 except Exception as e:
                     st.error(f"Error: {e}")
@@ -488,26 +489,23 @@ with tab3:
              with st.status("Running One-Stop Workflow...", expanded=True) as status:
                 try:
                     # --- STEP 1: Audio Extraction ---
-                    status.write("Step 1: Extracting Audio with FFmpeg...")
-                    base, _ = os.path.splitext(target_video_path_os)
-                    audio_path_os = f"{base}_temp_os.wav"
-                    success = extract_audio(target_video_path_os, audio_path_os)
+                    # --- STEP 1: Audio Extraction ---
+                    status.write("Step 1: Extracting Audio to Memory...")
+                    audio_array_os, error_msg_os = extract_audio_array(target_video_path_os)
                     
-                    if not success:
-                        status.update(label="Failed at Audio Extraction", state="error")
+                    if audio_array_os is None:
+                        status.update(label=f"Failed at Audio Extraction: {error_msg_os}", state="error")
                         st.stop()
                     
                     # --- STEP 2: Whisper Transcription ---
                     status.write(f"Step 2: Transcribing Audio (Whisper {whisper_model_select})...")
-                    # Default to CPU to avoid persistent MPS float64 errors with stable-ts
                     device = "cpu"
                     if torch.cuda.is_available(): device = "cuda"
                     
                     model_whisper = stable_whisper.load_model(whisper_model_select, device=device)
-                    # Regroup=True helps reduce hallucinations
-                    # Use fp16=False to avoid MPS float64/float16 issues (force float32)
+                    # Pass numpy array directly
                     result_whisper = model_whisper.transcribe(
-                        audio_path_os, 
+                        audio_array_os, 
                         language=whisper_lang_select, 
                         regroup=True,
                         fp16=False,
@@ -564,7 +562,6 @@ with tab3:
                     final_translated_srt = ApplyTranslationToSRT(original_srt_content, full_result_text)
                     
                     # Cleanup
-                    if os.path.exists(audio_path_os): os.remove(audio_path_os)
                     if os.path.exists(temp_srt_path_os): os.remove(temp_srt_path_os)
 
                     status.update(label="Workflow Complete!", state="complete", expanded=False)

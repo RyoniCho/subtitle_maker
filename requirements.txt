@@ -7,5 +7,7 @@ openai
 google-genai
 python-dotenv
 certifi
+numpy
+
 
 
