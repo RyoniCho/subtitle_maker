@@ -1,5 +1,10 @@
 import streamlit as st
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
 
 # Set PyTorch fallback for MPS to handle float64 operations. 
 # MUST be set before importing torch or any library that imports torch.
@@ -213,7 +218,8 @@ with st.sidebar:
     vertex_location = ""
     
     if auth_mode == "API Key":
-        api_key_input = st.text_input("Gemini API Key", type="password", help="Enter Google Gemini API Key")
+        default_api_key = os.getenv("GEMINI_API_KEY", "")
+        api_key_input = st.text_input("Gemini API Key", value=default_api_key, type="password", help="Enter Google Gemini API Key")
     else:
         st.info("Using System Credentials (ADC). Ensure you have run `gcloud auth application-default login`.")
         vertex_project_id = st.text_input("Google Cloud Project ID")
