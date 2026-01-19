@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv()
+load_dotenv(override=True)
 
 
 # Set PyTorch fallback for MPS to handle float64 operations. 
@@ -246,6 +246,8 @@ with st.sidebar:
     st.write("Whisper Settings (Tab 2 & 3)")
     whisper_model_select = st.selectbox("Whisper Model", ["large-v3-turbo", "large-v3", "large-v2", "medium", "small", "base"], index=0)
     whisper_lang_select = st.selectbox("Source Language", ["ja", "en", "ko", "zh", "es", "fr"], index=0)
+    
+    use_vad = st.checkbox("Enable VAD (Voice Activity Detection)", value=False, help="Reduces hallucinations in silent sections.")
 
 
 # --------------------------
@@ -391,7 +393,8 @@ with tab2:
                             audio_path, 
                             language=whisper_lang_select, 
                             regroup=True,
-                            fp16=False 
+                            fp16=False,
+                            vad=use_vad
                         )
                         
                         # 4. Save
@@ -496,7 +499,8 @@ with tab3:
                         audio_path_os, 
                         language=whisper_lang_select, 
                         regroup=True,
-                        fp16=False
+                        fp16=False,
+                        vad=use_vad
                     )
                     
                     # Save intermediate SRT to string
