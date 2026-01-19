@@ -10,6 +10,12 @@ load_dotenv(override=True)
 # MUST be set before importing torch or any library that imports torch.
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
+# Fix for SSL certificate verify failed error (common on Windows/macOS)
+import ssl
+import certifi
+os.environ['SSL_CERT_FILE'] = certifi.where()
+ssl._create_default_https_context = ssl.create_default_context(cafile=certifi.where())
+
 from google import genai
 import re
 import time
@@ -190,10 +196,13 @@ def extract_audio(video_path, audio_output_path):
         '-loglevel', 'error', audio_output_path
     ]
     try:
-        subprocess.run(command, check=True)
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            st.error(f"FFmpeg Error Output:\n{result.stderr}")
+            return False
         return True
-    except subprocess.CalledProcessError as e:
-        st.error(f"FFmpeg Error: {e}")
+    except Exception as e:
+        st.error(f"FFmpeg Execution Error: {e}")
         return False
 
 # ==========================================
@@ -365,7 +374,8 @@ with tab2:
                 try:
                     # 1. Extract Audio
                     status.write("Extracting Audio with FFmpeg...")
-                    audio_path = target_video_path + "_temp.wav"
+                    base, _ = os.path.splitext(target_video_path)
+                    audio_path = f"{base}_temp.wav"
                     success = extract_audio(target_video_path, audio_path)
                     
                     if success:
@@ -479,7 +489,8 @@ with tab3:
                 try:
                     # --- STEP 1: Audio Extraction ---
                     status.write("Step 1: Extracting Audio with FFmpeg...")
-                    audio_path_os = target_video_path_os + "_temp_os.wav"
+                    base, _ = os.path.splitext(target_video_path_os)
+                    audio_path_os = f"{base}_temp_os.wav"
                     success = extract_audio(target_video_path_os, audio_path_os)
                     
                     if not success:

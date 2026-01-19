@@ -6,4 +6,6 @@ stable-ts
 openai
 google-genai
 python-dotenv
+certifi
+
 
