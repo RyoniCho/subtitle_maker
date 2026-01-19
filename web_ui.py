@@ -575,27 +575,42 @@ with tab3:
                     
                     # Cleanup
                     if os.path.exists(temp_srt_path_os): os.remove(temp_srt_path_os)
+                    
+                    # --- SAVE TO SESSION STATE ---
+                    st.session_state['os_original_srt'] = original_srt_content
+                    st.session_state['os_translated_srt'] = final_translated_srt
+                    st.session_state['os_video_name'] = os.path.basename(target_video_path_os)
+                    st.session_state['os_lang_code'] = whisper_lang_select
 
                     status.update(label="Workflow Complete!", state="complete", expanded=False)
                     st.balloons()
                     
-                    # --- Output ---
-                    st.subheader("Workflow Results")
-                    
-                    col_dl1, col_dl2 = st.columns(2)
-                    
-                    base_name = os.path.basename(target_video_path_os)
-                    original_srt_name = os.path.splitext(base_name)[0] + f".{whisper_lang_select}.srt"
-                    translated_srt_name = os.path.splitext(base_name)[0] + ".ko.srt"
-                    
-                    with col_dl1:
-                        st.download_button("Download Original SRT (Whisper)", original_srt_content, original_srt_name, "text/plain")
-                        st.text_area("Original Content", original_srt_content, height=200)
-                        
-                    with col_dl2:
-                        st.download_button("Download Translated SRT (Gemini)", final_translated_srt, translated_srt_name, "text/plain")
-                        st.text_area("Translated Content", final_translated_srt, height=200)
-
                 except Exception as e:
                     st.error(f"Critical Error: {e}")
                     status.update(label="Workflow Failed", state="error")
+        
+        # --- Output (Persistent) ---
+        if 'os_original_srt' in st.session_state:
+            st.divider()
+            st.subheader("Workflow Results")
+            
+            col_dl1, col_dl2 = st.columns(2)
+            
+            base_name = st.session_state['os_video_name']
+            lang_code = st.session_state.get('os_lang_code', 'src')
+            original_srt_name = os.path.splitext(base_name)[0] + f".{lang_code}.srt"
+            translated_srt_name = os.path.splitext(base_name)[0] + ".ko.srt"
+            
+            with col_dl1:
+                st.download_button("Download Original SRT (Whisper)", st.session_state['os_original_srt'], original_srt_name, "text/plain")
+                st.text_area("Original Content", st.session_state['os_original_srt'], height=200)
+                
+            with col_dl2:
+                st.download_button("Download Translated SRT (Gemini)", st.session_state['os_translated_srt'], translated_srt_name, "text/plain")
+                st.text_area("Translated Content", st.session_state['os_translated_srt'], height=200)
+            
+            if st.button("Clear Results", key="btn_clear_os"):
+                del st.session_state['os_original_srt']
+                del st.session_state['os_translated_srt']
+                del st.session_state['os_video_name']
+                st.rerun()
