@@ -40,6 +40,46 @@ import subprocess
 import torch
 import shutil
 import sys
+import tqdm
+
+class TqdmToStreamlit(tqdm.tqdm):
+    """
+    Redirects tqdm progress to Streamlit progress bar.
+    """
+    st_progress_bar = None
+    st_status_text = None
+
+    @classmethod
+    def set_streamlit_elements(cls, progress_bar, status_text):
+        cls.st_progress_bar = progress_bar
+        cls.st_status_text = status_text
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Don't display standard stderr output
+        self.file = sys.stdout 
+        
+    def update(self, n=1):
+        super().update(n)
+        if self.total and self.st_progress_bar:
+            # Calculate percentage
+            percentage = self.n / self.total
+            # Clamp between 0.0 and 1.0 to avoid errors
+            percentage = max(0.0, min(1.0, percentage))
+            self.st_progress_bar.progress(percentage)
+            
+            if self.st_status_text:
+                # Show percentage and elapsed time in status text if desired
+                # format_dict = self.format_dict
+                # elapsed_str = tqdm.format_interval(format_dict['elapsed'])
+                self.st_status_text.text(f"Transcribing... {int(percentage*100)}%")
+
+    def close(self):
+        super().close()
+        if self.st_progress_bar:
+            self.st_progress_bar.empty()
+        if self.st_status_text:
+            self.st_status_text.empty()
 
 def open_file_dialog():
     """Opens a file dialog to select a video file using a subprocess to avoid threading issues."""
@@ -411,15 +451,32 @@ with tab2:
                             
                             # 3. Transcribe
                             status.write("Transcribing...")
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
                             
-                            # Pass numpy array directly
-                            result = model.transcribe(
-                                audio_array, 
-                                language=whisper_lang_select, 
-                                regroup=True,
-                                fp16=False,
-                                vad=use_vad
-                            )
+                            # Redirect tqdm to streamlit
+                            TqdmToStreamlit.set_streamlit_elements(progress_bar, status_text)
+                            
+                            # Save original tqdm
+                            original_tqdm = tqdm.tqdm
+                            # Monkey patch
+                            tqdm.tqdm = TqdmToStreamlit
+                            
+                            try:
+                                # Pass numpy array directly
+                                result = model.transcribe(
+                                    audio_array, 
+                                    language=whisper_lang_select, 
+                                    regroup=True,
+                                    fp16=False,
+                                    vad=use_vad,
+                                    verbose=None # Suppress print if needed, but tqdm handles it
+                                )
+                            finally:
+                                # Restore original tqdm
+                                tqdm.tqdm = original_tqdm
+                                progress_bar.empty()
+                                status_text.empty()
                             
                             # 4. Save
                             status.write("Saving SRT...")
@@ -511,18 +568,32 @@ with tab3:
                     
                     # --- STEP 2: Whisper Transcription ---
                     status.write(f"Step 2: Transcribing Audio (Whisper {whisper_model_select})...")
+                    progress_bar_os = st.progress(0)
+                    status_text_os = st.empty()
+                    
                     device = "cpu"
                     if torch.cuda.is_available(): device = "cuda"
                     
                     model_whisper = stable_whisper.load_model(whisper_model_select, device=device)
-                    # Pass numpy array directly
-                    result_whisper = model_whisper.transcribe(
-                        audio_array_os, 
-                        language=whisper_lang_select, 
-                        regroup=True,
-                        fp16=False,
-                        vad=use_vad
-                    )
+                    
+                    # Redirect tqdm to streamlit
+                    TqdmToStreamlit.set_streamlit_elements(progress_bar_os, status_text_os)
+                    original_tqdm = tqdm.tqdm
+                    tqdm.tqdm = TqdmToStreamlit
+                    
+                    try:
+                        # Pass numpy array directly
+                        result_whisper = model_whisper.transcribe(
+                            audio_array_os, 
+                            language=whisper_lang_select, 
+                            regroup=True,
+                            fp16=False,
+                            vad=use_vad
+                        )
+                    finally:
+                         tqdm.tqdm = original_tqdm
+                         progress_bar_os.empty()
+                         status_text_os.empty()
                     
                     # Save intermediate SRT to string
                     temp_srt_path_os = "temp_output_os.srt"
