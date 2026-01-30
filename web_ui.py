@@ -209,15 +209,18 @@ def ApplyTranslationToSRT(original_content, translated_text):
     i = 0
     while i < len(lines):
         line = lines[i].strip()
-        new_lines.append(lines[i] + '\n') 
         
         if line.isdigit():
+            # 1. Append Number
             num = int(line)
+            new_lines.append(lines[i] + '\n')
+            
+            # 2. Append Timestamp
             if i + 1 < len(lines):
                 i += 1
                 new_lines.append(lines[i] + '\n')
             
-            # Now we are at text lines
+            # 3. Handle Text
             i += 1
             if num in translatedDict:
                 # Consume original text lines until empty line
@@ -233,6 +236,16 @@ def ApplyTranslationToSRT(original_content, translated_text):
                  while i < len(lines) and lines[i].strip() != "":
                     new_lines.append(lines[i] + '\n')
                     i += 1
+            
+            # 4. Handle Block Separator (Empty Line)
+            # The loops above stop when lines[i] is empty (or OOB).
+            # We need to append this empty line to separate blocks.
+            if i < len(lines):
+                 new_lines.append(lines[i] + '\n')
+
+        else:
+            # Not a block start (could be metadata or extra newlines), just keep it
+            new_lines.append(lines[i] + '\n')
         
         i += 1
         
