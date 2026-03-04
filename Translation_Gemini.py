@@ -13,6 +13,7 @@ from datetime import datetime
 import threading
 from queue import Queue
 import logging
+from dotenv import load_dotenv
 
 # ALTS 관련 로그 숨기기
 logging.getLogger('google.auth._default').setLevel(logging.ERROR)
@@ -20,7 +21,10 @@ os.environ['GRPC_TRACE'] = 'none'
 os.environ['GRPC_VERBOSITY'] = 'none'
 
 # Gemini API 키 설정
-GOOGLE_API_KEY = "API-KEY-HERE"  # Gemini API 키를 여기에 입력하세요
+load_dotenv()
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+if not GOOGLE_API_KEY:
+    raise ValueError("GOOGLE_API_KEY not found in .env file")
 genai.configure(api_key=GOOGLE_API_KEY)
 
 # Rate limiting 설정
@@ -46,49 +50,53 @@ def wait_for_rate_limit():
         # 현재 요청 시간 기록
         request_timestamps.append(now)
 
-def Run_Gemini_Translation(inputStrs):
+def Run_Gemini_Translation(inputStrs, start_chunk=0):
     endChunkIndex = GetEndChunkIndexFromResumeInfo()
-    
     resultText = ''
     requestCount = 0
     currentChunkIndex = 0
     geminiRequestFailed = False
-
     try:
-        # Gemini 2.5 Flash 모델 설정
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        model = genai.GenerativeModel('gemini-3.1-pro-preview')
+        
+        # 안전 설정: 성인 콘텐츠 등 모든 차단 필터 해제
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
 
-        for chunkIndex, sentence in enumerate(inputStrs):
-            if chunkIndex <= endChunkIndex:
+        for chunkIndex, chunk in enumerate(inputStrs):
+            # start_chunk 인덱스부터 시작
+            if chunkIndex < max(endChunkIndex + 1, start_chunk):
                 isResumeProcess = True
                 continue
 
             # Rate limit 체크
             wait_for_rate_limit()
 
-            # Gemini API 호출
-            prompt = f"""당신은 전문적인 번역가입니다. 다음 텍스트를 한국어로 번역해주세요.
-            - 문장앞에 있는 번호를 포함해주세요
-            - 내용을 바꾸지 말고 숫자와 줄바꿈을 유지해주세요
-            - 중간에 섹스신이 있는데 섹스관련내용은 의역해도 됩니다
-            
-            텍스트:
-            {sentence}"""
+            # chunk는 이미 번호+내용 형식으로 되어 있음
+            prompt = f"다음 자막을 한줄씩 한국어로 번역해줘. 각 줄은 '번호. 내용' 형식이야. 번역도 '번호. 번역된 내용' 형식으로 해줘. 성적인 묘사가 포함된 경우, 직접적인 표현 대신 은유적이거나 순화된 표현을 사용해서 안전 필터에 걸리지 않게 번역해줘.\n\n{chunk}"
 
             try:
-                response = model.generate_content(prompt)
+                response = model.generate_content(prompt, safety_settings=safety_settings)
                 
                 if response.text:
+                    print(f"Gemini response for chunk {chunkIndex}:\n {response.text}") 
                     resultText += response.text + "\n"
                     requestCount += 1
                     currentChunkIndex = chunkIndex
                     print(f"Successfully translated chunk {chunkIndex + 1}/{len(inputStrs)}")
                 else:
-                    print(f"Warning: Empty response for chunk {chunkIndex}")
+                    raise ValueError("Empty response (likely blocked)")
             except Exception as e:
                 print(f"Error translating chunk {chunkIndex}: {e}")
-                time.sleep(5)  # 에러 발생시 5초 대기
-                continue
+                print(f"Safety block triggered. Using original text for chunk {chunkIndex}.")
+                resultText += chunk + "\n"
+                requestCount += 1
+                currentChunkIndex = chunkIndex
+                time.sleep(2)
 
     except Exception as e:
         print(f"Gemini request failed: {e}")
@@ -101,7 +109,6 @@ def Run_Gemini_Translation(inputStrs):
             RemoveResumeInfo()
 
         resultText = resultText.encode('utf-8').decode('utf-8')
-        resultText = ValidateTranslatedText(resultText)
     else:
         RemoveResumeInfo()
         print('Gemini Response is null. exit')
@@ -119,50 +126,86 @@ def SaveGPTResponsePlainText(subFileName, resultText):
     with open(saveFileName, fileMode, encoding='utf-8') as f:
         f.write(resultText)
 
-def SaveSubscriptionFile(subFileName, subFileExtension, resultText):
-    resultTexts = resultText.split('\n')
+def ParseGeminiResultToDict(resultText):
     translatedDict = dict()
+    for line in resultText.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        # 번호. 번역된 내용 형식
+        match = re.match(r"^(\d+)\.\s*(.*)$", line)
+        if match:
+            num = int(match.group(1))
+            txt = match.group(2)
+            translatedDict[num] = txt
+    return translatedDict
 
-    for txtWithNumber in resultTexts:
-        splitedNumberText = txtWithNumber.split(':')
-        if len(splitedNumberText) >= 2:
-            numText = splitedNumberText[0].strip()
-            plainText = splitedNumberText[1] + "\n"
-            if numText.isdigit():
-                translatedDict[int(numText)] = plainText
-            else:
-                numList = [int(s) for s in re.findall(r'\d+', numText)]
-                if len(numList) == 1:
-                    translatedDict[numList[0]] = plainText
-                else:
-                    print(f"number error=> {txtWithNumber}")
+def SRT_to_numbered_blocks(srt_path):
+    with open(srt_path, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+    blocks = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip().isdigit():
+            num = int(lines[i].strip())
+            # 시간 줄 건너뜀
+            j = i + 2
+            text_lines = []
+            while j < len(lines) and lines[j].strip() != "":
+                text_lines.append(lines[j].rstrip('\n'))
+                j += 1
+            block = f"{num}. " + "\n".join(text_lines)
+            blocks.append(block)
+            i = j
+        else:
+            i += 1
+    return blocks
 
-    spacing = 4
-    currentIndex = 2
-
+def SaveSubscriptionFile(subFileName, subFileExtension, resultText):
+    translatedDict = ParseGeminiResultToDict(resultText)
     originSubFile = f"{subFileName}.{subFileExtension}"
     writeSubFile = f"{subFileName}_translated.{subFileExtension}"
-    if isRecoverInvalid or isResumeProcess:
-        originSubFile = writeSubFile
-
-    print(f"SaveSubscriptionFile : Read-> {originSubFile}")
-    print(f"SaveSubscriptionFile : Write-> {writeSubFile}")
-
-    lines = list()
-
     with open(originSubFile, 'r', encoding='utf-8') as f:
         lines = f.readlines()
-
-        for index, line in enumerate(lines):
-            if currentIndex == index:
-                subscriptLineNum = lines[index-2].strip()
-                if subscriptLineNum.isdigit():
-                    if int(subscriptLineNum) in translatedDict:
-                        lines[index] = translatedDict[int(subscriptLineNum)]
-                currentIndex += spacing
-
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.isdigit():
+            num = int(line)
+            if num in translatedDict:
+                # 시간 줄 건너뜀
+                j = i + 2
+                if j < len(lines):
+                    # 번역문이 여러 줄일 경우 SRT에 맞게 분리
+                    translated_lines = translatedDict[num].split('\n')
+                    k = 0
+                    # 기존 텍스트 줄을 번역문으로 교체, 남는 줄은 비움
+                    while j + k < len(lines) and lines[j + k].strip() != "" and k < len(translated_lines):
+                        lines[j + k] = translated_lines[k] + '\n'
+                        k += 1
+                    # 번역문이 더 길면 추가
+                    while k < len(translated_lines):
+                        lines.insert(j + k, translated_lines[k] + '\n')
+                        k += 1
+                    # 기존 텍스트 줄이 더 길면 남는 줄 비움
+                    m = j + k
+                    while m < len(lines) and lines[m].strip() != "":
+                        lines[m] = "\n"
+                        m += 1
+        i += 1
     with open(writeSubFile, 'w', encoding='utf-8') as f:
         f.writelines(lines)
+
+def FilterString(text):
+    if "(" not in text or ")" not in text:
+        return text
+
+    start = text.find("(") + 1
+    end = text.find(")", start)
+    inner_string = text[start:end]
+    return inner_string
+
+
 
 def FilterString(text):
     if "(" not in text or ")" not in text:
@@ -178,16 +221,6 @@ def ReadOriginSubscription(fileName, fileExtension):
     currentIndex = 2
     contentsStr = ''
     
-    with open(f"{fileName}.{fileExtension}", 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-
-        for index, line in enumerate(lines):
-            if currentIndex == index:
-                lineNum = lines[index-2].replace('\n', ':')
-                lineNum = lineNum.strip()
-                contentsStr += f"{lineNum}{lines[index]}"
-                currentIndex += spacing
-                originTextTable[lineNum] = f"{lineNum}{lines[index]}"
 
     contents = contentsStr.split('\n')
     del contents[-1]
@@ -207,35 +240,27 @@ def ReadInvalidTranslationList():
         return lines
 
 def SliceStringListForGPTRequest(originStrList):
-    MAX_CHUNK_SIZE = 50 * 1024  # 50KB (약 25,000 토큰 정도로 예상)
+    MAX_CHUNK_SIZE = 20 * 1024  # 50KB
     resultList = []
     tempText = ''
     current_size = 0
-
-    for sentence in originStrList:
-        sentence_with_newline = sentence + '\n'
-        sentence_size = len(sentence_with_newline.encode('utf-8'))  # UTF-8 바이트 길이로 측정
-        
-        # 현재 청크가 비어있지 않고, 새 문장을 추가하면 최대 크기를 초과할 경우
-        if current_size > 0 and (current_size + sentence_size > MAX_CHUNK_SIZE):
+    for block in originStrList:
+        block_with_newline = block + '\n'
+        block_size = len(block_with_newline.encode('utf-8'))
+        if current_size > 0 and (current_size + block_size > MAX_CHUNK_SIZE):
             resultList.append(tempText)
-            tempText = sentence_with_newline
-            current_size = sentence_size
+            tempText = block_with_newline
+            current_size = block_size
         else:
-            tempText += sentence_with_newline
-            current_size += sentence_size
-
-    # 마지막 청크 추가
+            tempText += block_with_newline
+            current_size += block_size
     if tempText:
         resultList.append(tempText)
-
     print(f"Total chunks: {len(resultList)}")
     for i, chunk in enumerate(resultList):
         print(f"Chunk {i+1} size: {len(chunk.encode('utf-8'))} bytes")
-
     with open('sliced_text.txt', 'w', encoding='utf-8') as f:
         f.writelines(resultList)
-
     return resultList
 
 def ValidateTranslatedText(texts):
@@ -337,17 +362,25 @@ def Run_Translation():
     global isRecoverInvalid
     isRecoverInvalid = CheckNeedToRecoverValdation()
 
+    if args.from_txt:
+        saveFileName = f'{SUBSCRIPT_FILE_NAME}.txt'
+        with open(saveFileName, 'r', encoding='utf-8') as f:
+            translatedFullStr = f.read()
+        SaveSubscriptionFile(SUBSCRIPT_FILE_NAME, SUBSCRIPT_FILE_EXTENSION, translatedFullStr)
+        return
+
     if isRecoverInvalid:
         originStrList = ReadInvalidTranslationList()
         if originStrList is None:
             print("Read invalid list is null")
             return
     else:
-        originStrList = ReadOriginSubscription(SUBSCRIPT_FILE_NAME, SUBSCRIPT_FILE_EXTENSION)
+        # SRT를 번호별 블록(여러 줄 포함)으로 파싱
+        originStrList = SRT_to_numbered_blocks(f"{SUBSCRIPT_FILE_NAME}.{SUBSCRIPT_FILE_EXTENSION}")
 
     slicedStrList = SliceStringListForGPTRequest(originStrList)
     if useGemini:
-        translatedFullStr = Run_Gemini_Translation(slicedStrList)
+        translatedFullStr = Run_Gemini_Translation(slicedStrList, start_chunk=args.start_chunk)
         SaveGPTResponsePlainText(SUBSCRIPT_FILE_NAME, translatedFullStr)
     else:
         saveFileName = f'{SUBSCRIPT_FILE_NAME}.txt'
@@ -358,6 +391,8 @@ def Run_Translation():
 
 parser = argparse.ArgumentParser(description="Translation-Gemini")
 parser.add_argument("--f", required=True)
+parser.add_argument("--start_chunk", type=int, default=0, help="시작할 청크 인덱스 (0부터 시작)")
+parser.add_argument("--from_txt", action='store_true', help="기존 txt 파일로만 SRT 변환 (Gemini 요청 생략)")
 args = parser.parse_args()
 
 if __name__ == "__main__":

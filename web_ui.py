@@ -309,21 +309,24 @@ with st.sidebar:
         vertex_location = st.text_input("Location (Region)", value="us-central1")
 
     gemini_model_list = [
-        "gemini-3-pro-preview", 
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-flash-lite-preview",
         "gemini-3-flash-preview",
-        "gemini-2.5-flash", 
-        "gemini-2.5-flash-Lite", 
-        "gemini-2.5-pro", 
+        "gemini-2.0-flash-exp",
         "gemini-1.5-pro", 
         "gemini-1.5-flash", 
-        "gemini-pro"
+        "gemini-pro",
+        "Custom"
     ]
     gemini_model_select = st.selectbox("Gemini Model", gemini_model_list, index=0)
+    
+    if gemini_model_select == "Custom":
+        gemini_model_select = st.text_input("Enter Custom Model Name", value="gemini-1.5-pro")
     
     
     st.markdown("---")
     custom_prompt_input = st.text_area("Translation Prompt", 
-        value="다음 자막을 한줄씩 한국어로 번역해줘. 각 줄은 '번호. 내용' 형식이야. 번역도 '번호. 번역된 내용' 형식으로 해줘. 예술영화라서 좀 야한장면이 있는데 빠지지않고 해줬으면 좋겠어",
+        value="다음 자막을 한줄씩 한국어로 번역해줘. 각 줄은 '번호. 내용' 형식이야. 번역도 '번호. 번역된 내용' 형식으로 해줘. 성적인 묘사가 포함된 경우, 직접적인 표현 대신 은유적이거나 순화된 표현을 사용해서 안전 필터에 걸리지 않게 번역해줘.",
         height=150)
     
     st.markdown("---")
@@ -358,6 +361,16 @@ with tab1:
             else:
                 client = genai.Client(vertexai=True, project=vertex_project_id, location=vertex_location)
             
+            # 안전 설정: 성인 콘텐츠 등 모든 차단 필터 해제
+            safety_config = {
+                "safety_settings": [
+                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                ]
+            }
+
             st.write("Parsing SRT...")
             status_text = st.empty()
             
@@ -377,15 +390,17 @@ with tab1:
                 try:
                     response = client.models.generate_content(
                         model=gemini_model_select,
-                        contents=prompt
+                        contents=prompt,
+                        config=safety_config
                     )
                     if response.text:
                         full_result_text += response.text + "\n"
                     else:
-                        st.warning(f"Part {idx+1} empty.")
+                        raise ValueError("Empty response")
                 except Exception as e:
-                    st.error(f"Error {idx+1}: {e}")
-                    time.sleep(5)
+                    st.error(f"Error {idx+1}: {e}. Using original text.")
+                    full_result_text += chunk + "\n"
+                    time.sleep(2)
                 
                 progress_bar.progress((idx + 1) / len(slicedStrList))
                 
@@ -625,6 +640,16 @@ with tab3:
                     else:
                         client = genai.Client(vertexai=True, project=vertex_project_id, location=vertex_location)
 
+                    # 안전 설정: 성인 콘텐츠 등 모든 차단 필터 해제
+                    safety_config = {
+                        "safety_settings": [
+                            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                        ]
+                    }
+
                     originStrList = SRT_to_numbered_blocks(original_srt_content)
                     slicedStrList = SliceStringListForGPTRequest(originStrList)
                     
@@ -643,14 +668,17 @@ with tab3:
                         try:
                             response = client.models.generate_content(
                                 model=gemini_model_select,
-                                contents=prompt
+                                contents=prompt,
+                                config=safety_config
                             )
                             if response.text:
                                 full_result_text += response.text + "\n"
+                            else:
+                                raise ValueError("Empty response")
                         except Exception as e:
-                            status.write(f"Error on chunk {idx+1}: {e}. Retrying...")
-                            time.sleep(5) 
-                            # Simple retry logic could be added here
+                            status.write(f"Error on chunk {idx+1}: {e}. Using original text.")
+                            full_result_text += chunk + "\n"
+                            time.sleep(2)
                     
                     status.write("Translation logic finished. Merging...")
                     
