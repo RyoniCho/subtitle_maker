@@ -116,29 +116,13 @@ except:
         print(f"File dialog error: {e}")
         return None
 
-import tqdm
-import platform
-
-# Check if stable_whisper is available
+# Check if stable_whisper is available (it should be)
 try:
     import stable_whisper
     STABLE_WHISPER_AVAILABLE = True
 except ImportError:
     STABLE_WHISPER_AVAILABLE = False
-
-# Check if mlx-qwen3-asr is available (Mac Silicon)
-try:
-    import mlx_qwen3_asr
-    MLX_QWEN3_AVAILABLE = True
-except ImportError:
-    MLX_QWEN3_AVAILABLE = False
-
-# Check if qwen-asr is available (CUDA/PyTorch)
-try:
-    from qwen_asr import Qwen3ASRModel
-    CUDA_QWEN3_AVAILABLE = True
-except ImportError:
-    CUDA_QWEN3_AVAILABLE = False
+    print("stable-ts not found. Please install with `pip install stable-ts`")
 
 # ==========================================
 # Core Logic: Gemini Translation
@@ -295,85 +279,6 @@ def extract_audio(video_path, audio_output_path):
     # Replaced by extract_audio_array in main logic
     pass 
 
-def transcribe_with_qwen3(audio_data, model_size="1.7B", language="ja"):
-    """
-    Transcribes audio using Qwen3-ASR.
-    Supports MLX (Mac Silicon) and PyTorch (CUDA/CPU).
-    """
-    import tempfile
-    
-    # 1. Determine model path
-    hf_model = f"Qwen/Qwen3-ASR-{model_size}"
-    
-    # 2. Transcribe based on available backend
-    if MLX_QWEN3_AVAILABLE and platform.system() == "Darwin" and platform.machine() == "arm64":
-        # Apple Silicon Mac: Use MLX
-        st.info(f"Using MLX backend for Qwen3-ASR ({model_size})")
-        
-        # Create temp file because mlx-qwen3-asr CLI/API often expects file paths
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-            import scipy.io.wavfile as wav
-            # Ensure audio_data is 16kHz mono as per extract_audio_array
-            wav.write(tmp.name, 16000, (audio_data * 32767).astype(np.int16))
-            tmp_path = tmp.name
-        
-        try:
-            # mlx_qwen3_asr.transcribe returns a dict with 'segments'
-            result = mlx_qwen3_asr.transcribe(tmp_path, model=model_size)
-            if isinstance(result, str): # Fallback if only text returned
-                result = {"text": result, "segments": [{"start": 0, "end": len(audio_data)/16000, "text": result}]}
-        finally:
-            if os.path.exists(tmp_path): os.remove(tmp_path)
-            
-        return result
-    
-    elif CUDA_QWEN3_AVAILABLE:
-        # CUDA or CPU: Use standard qwen-asr (PyTorch)
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        st.info(f"Using PyTorch backend ({device}) for Qwen3-ASR ({model_size})")
-        
-        # In a real app, we might want to cache this model instance
-        model = Qwen3ASRModel.from_pretrained(hf_model, device=device)
-        
-        # Transcribe (some versions take path, some take array)
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-            import scipy.io.wavfile as wav
-            wav.write(tmp.name, 16000, (audio_data * 32767).astype(np.int16))
-            tmp_path = tmp.name
-        try:
-            result = model.transcribe(tmp_path)
-        finally:
-            if os.path.exists(tmp_path): os.remove(tmp_path)
-            
-        return result
-    else:
-        st.error("Qwen3-ASR backend not available. Please install mlx-qwen3-asr or qwen-asr.")
-        return None
-
-def segments_to_srt(segments):
-    """Converts a list of subtitle segments to SRT string."""
-    srt_content = ""
-    for i, segment in enumerate(segments, 1):
-        start = float(segment.get("start", 0))
-        end = float(segment.get("end", 0))
-        text = str(segment.get("text", "")).strip()
-        
-        if not text:
-            continue
-            
-        # SRT Format: HH:MM:SS,mmm
-        def format_time(seconds):
-            hours = int(seconds // 3600)
-            minutes = int((seconds % 3600) // 60)
-            secs = int(seconds % 60)
-            msecs = int((seconds % 1) * 1000)
-            return f"{hours:02d}:{minutes:02d}:{secs:02d},{msecs:03d}"
-            
-        start_str = format_time(start)
-        end_str = format_time(end)
-        srt_content += f"{i}\n{start_str} --> {end_str}\n{text}\n\n"
-    return srt_content
-
 # ==========================================
 # Streamlit UI
 # ==========================================
@@ -425,17 +330,11 @@ with st.sidebar:
         height=150)
     
     st.markdown("---")
-    st.write("ASR Settings")
-    asr_engine = st.radio("ASR Engine", ["Whisper (stable-ts)", "Qwen3-ASR"], index=0)
-    
-    if asr_engine == "Whisper (stable-ts)":
-        whisper_model_select = st.selectbox("Whisper Model", ["large-v3-turbo", "large-v3", "large-v2", "medium", "small", "base"], index=0)
-        use_vad = st.checkbox("Enable VAD (Voice Activity Detection)", value=False, help="Reduces hallucinations in silent sections.")
-    else:
-        qwen_model_select = st.selectbox("Qwen3 Model", ["1.7B", "0.6B"], index=0)
-        st.info("Qwen3-ASR uses MLX on Apple Silicon and PyTorch/CUDA on NVIDIA GPUs.")
-    
+    st.write("Whisper Settings (Tab 2 & 3)")
+    whisper_model_select = st.selectbox("Whisper Model", ["large-v3-turbo", "large-v3", "large-v2", "medium", "small", "base"], index=0)
     whisper_lang_select = st.selectbox("Source Language", ["ja", "en", "ko", "zh", "es", "fr"], index=0)
+    
+    use_vad = st.checkbox("Enable VAD (Voice Activity Detection)", value=False, help="Reduces hallucinations in silent sections.")
 
 
 # --------------------------
@@ -580,65 +479,53 @@ with tab2:
                             
                             # 3. Transcribe
                             status.write("Transcribing...")
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
                             
-                            srt_content = ""
-                            if asr_engine == "Whisper (stable-ts)":
-                                progress_bar = st.progress(0)
-                                status_text = st.empty()
-                                
-                                # Redirect tqdm to streamlit
-                                TqdmToStreamlit.set_streamlit_elements(progress_bar, status_text)
-                                
-                                # Save original tqdm
-                                original_tqdm = tqdm.tqdm
-                                # Monkey patch
-                                tqdm.tqdm = TqdmToStreamlit
-                                
-                                try:
-                                    model = stable_whisper.load_model(whisper_model_select, device=device)
-                                    # Pass numpy array directly
-                                    result = model.transcribe(
-                                        audio_array, 
-                                        language=whisper_lang_select, 
-                                        regroup=True,
-                                        fp16=False,
-                                        vad=use_vad,
-                                        verbose=None
-                                    )
-                                    # 4. Save
-                                    status.write("Saving SRT...")
-                                    temp_srt_path = "temp_output.srt"
-                                    result.to_srt_vtt(temp_srt_path, segment_level=True, word_level=False)
-                                    with open(temp_srt_path, "r", encoding="utf-8") as f:
-                                        srt_content = f.read()
-                                    if os.path.exists(temp_srt_path): os.remove(temp_srt_path)
-                                finally:
-                                    # Restore original tqdm
-                                    tqdm.tqdm = original_tqdm
-                                    progress_bar.empty()
-                                    status_text.empty()
-                            else:
-                                # Qwen3 ASR
-                                result = transcribe_with_qwen3(audio_array, model_size=qwen_model_select, language=whisper_lang_select)
-                                if result and "segments" in result:
-                                    status.write("Saving SRT...")
-                                    srt_content = segments_to_srt(result["segments"])
-                                else:
-                                    st.error("Qwen3 transcription failed.")
-                                    srt_content = None
-
-                            if srt_content:
-                                base_name = os.path.basename(target_video_path)
-                                srt_name = os.path.splitext(base_name)[0] + ".srt"
-                                
-                                st.balloons()
-                                status.update(label="Complete!", state="complete", expanded=False)
-                                
-                                st.subheader("Result")
-                                st.download_button("Download Generated SRT", srt_content, srt_name, "text/plain")
-                                st.text_area("SRT Content", srt_content, height=300)
-                            else:
-                                status.update(label="Transcription failed.", state="error")
+                            # Redirect tqdm to streamlit
+                            TqdmToStreamlit.set_streamlit_elements(progress_bar, status_text)
+                            
+                            # Save original tqdm
+                            original_tqdm = tqdm.tqdm
+                            # Monkey patch
+                            tqdm.tqdm = TqdmToStreamlit
+                            
+                            try:
+                                # Pass numpy array directly
+                                result = model.transcribe(
+                                    audio_array, 
+                                    language=whisper_lang_select, 
+                                    regroup=True,
+                                    fp16=False,
+                                    vad=use_vad,
+                                    verbose=None # Suppress print if needed, but tqdm handles it
+                                )
+                            finally:
+                                # Restore original tqdm
+                                tqdm.tqdm = original_tqdm
+                                progress_bar.empty()
+                                status_text.empty()
+                            
+                            # 4. Save
+                            status.write("Saving SRT...")
+                            base_name = os.path.basename(target_video_path)
+                        srt_name = os.path.splitext(base_name)[0] + ".srt"
+                        
+                        temp_srt_path = "temp_output.srt"
+                        result.to_srt_vtt(temp_srt_path, segment_level=True, word_level=False)
+                        
+                        with open(temp_srt_path, "r", encoding="utf-8") as f:
+                            srt_content = f.read()
+                            
+                        st.balloons()
+                        status.update(label="Complete!", state="complete", expanded=False)
+                        
+                        st.subheader("Result")
+                        st.download_button("Download Generated SRT", srt_content, srt_name, "text/plain")
+                        st.text_area("SRT Content", srt_content, height=300)
+                        
+                        # Cleanup
+                        if os.path.exists(temp_srt_path): os.remove(temp_srt_path)
                         
                     else:
                         status.update(label=f"Failed at Audio Extraction: {error_msg}", state="error")
@@ -707,51 +594,41 @@ with tab3:
                         status.update(label=f"Failed at Audio Extraction: {error_msg_os}", state="error")
                         st.stop()
                     
-                    # --- STEP 2: ASR Transcription ---
-                    status.write(f"Step 2: Transcribing Audio ({asr_engine})...")
+                    # --- STEP 2: Whisper Transcription ---
+                    status.write(f"Step 2: Transcribing Audio (Whisper {whisper_model_select})...")
+                    progress_bar_os = st.progress(0)
+                    status_text_os = st.empty()
                     
-                    original_srt_content = ""
-                    if asr_engine == "Whisper (stable-ts)":
-                        progress_bar_os = st.progress(0)
-                        status_text_os = st.empty()
-                        
-                        device = "cpu"
-                        if torch.cuda.is_available(): device = "cuda"
-                        
-                        # Redirect tqdm to streamlit
-                        TqdmToStreamlit.set_streamlit_elements(progress_bar_os, status_text_os)
-                        original_tqdm = tqdm.tqdm
-                        tqdm.tqdm = TqdmToStreamlit
-                        
-                        try:
-                            model_whisper = stable_whisper.load_model(whisper_model_select, device=device)
-                            # Pass numpy array directly
-                            result_whisper = model_whisper.transcribe(
-                                audio_array_os, 
-                                language=whisper_lang_select, 
-                                regroup=True,
-                                fp16=False,
-                                vad=use_vad
-                            )
-                            # Save intermediate SRT to string
-                            temp_srt_path_os = "temp_output_os.srt"
-                            result_whisper.to_srt_vtt(temp_srt_path_os, segment_level=True, word_level=False)
-                            
-                            with open(temp_srt_path_os, "r", encoding="utf-8") as f:
-                                original_srt_content = f.read()
-                            if os.path.exists(temp_srt_path_os): os.remove(temp_srt_path_os)
-                        finally:
-                             tqdm.tqdm = original_tqdm
-                             progress_bar_os.empty()
-                             status_text_os.empty()
-                    else:
-                        # Qwen3 ASR
-                        result_qwen = transcribe_with_qwen3(audio_array_os, model_size=qwen_model_select, language=whisper_lang_select)
-                        if result_qwen and "segments" in result_qwen:
-                            original_srt_content = segments_to_srt(result_qwen["segments"])
-                        else:
-                            status.update(label="Qwen3 Transcription failed.", state="error")
-                            st.stop()
+                    device = "cpu"
+                    if torch.cuda.is_available(): device = "cuda"
+                    
+                    model_whisper = stable_whisper.load_model(whisper_model_select, device=device)
+                    
+                    # Redirect tqdm to streamlit
+                    TqdmToStreamlit.set_streamlit_elements(progress_bar_os, status_text_os)
+                    original_tqdm = tqdm.tqdm
+                    tqdm.tqdm = TqdmToStreamlit
+                    
+                    try:
+                        # Pass numpy array directly
+                        result_whisper = model_whisper.transcribe(
+                            audio_array_os, 
+                            language=whisper_lang_select, 
+                            regroup=True,
+                            fp16=False,
+                            vad=use_vad
+                        )
+                    finally:
+                         tqdm.tqdm = original_tqdm
+                         progress_bar_os.empty()
+                         status_text_os.empty()
+                    
+                    # Save intermediate SRT to string
+                    temp_srt_path_os = "temp_output_os.srt"
+                    result_whisper.to_srt_vtt(temp_srt_path_os, segment_level=True, word_level=False)
+                    
+                    with open(temp_srt_path_os, "r", encoding="utf-8") as f:
+                        original_srt_content = f.read()
                         
                     status.write("Transcription Complete. Preparing translation...")
                     
