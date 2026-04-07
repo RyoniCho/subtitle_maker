@@ -1,5 +1,39 @@
 import streamlit as st
 import os
+import sys
+
+# ==========================================
+# Windows Unicode Path Fix (Nagisa & Torch)
+# ==========================================
+# This fix addresses the issue where Japanese tagger 'nagisa' and PyTorch 
+# cannot read files from a Windows user folder with Korean/Non-ASCII characters.
+
+# 1. Nagisa model path monkey-patch
+try:
+    import nagisa
+    from nagisa.tagger import Tagger
+    
+    # Preserve original __init__
+    original_nagisa_init = Tagger.__init__
+    
+    def patched_nagisa_init(self, *args, **kwargs):
+        # Redirect to a safe, non-ASCII path
+        safe_model_dir = r"C:\nagisa_data"
+        if os.path.exists(safe_model_dir):
+            if 'vocabs' not in kwargs:
+                kwargs['vocabs'] = os.path.join(safe_model_dir, "nagisa_v001.vocabs")
+            if 'params' not in kwargs:
+                kwargs['params'] = os.path.join(safe_model_dir, "nagisa_v001.params")
+            if 'hp' not in kwargs:
+                kwargs['hp'] = os.path.join(safe_model_dir, "nagisa_v001.hp")
+        return original_nagisa_init(self, *args, **kwargs)
+    
+    # Apply monkey-patch
+    Tagger.__init__ = patched_nagisa_init
+except Exception:
+    pass
+
+# 2. Torch & Environment Fixes
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
